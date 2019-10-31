@@ -2,7 +2,7 @@ import json
 
 from django.core import checks, exceptions, serializers
 from django.db import connection
-from django.db.models.expressions import RawSQL
+from django.db.models.expressions import OuterRef, RawSQL, Subquery
 from django.forms import Form
 from django.test.utils import CaptureQueriesContext, isolate_apps
 
@@ -207,6 +207,12 @@ class TestQuerying(PostgreSQLTestCase):
             queries[0]['sql'],
         )
 
+    def test_obj_subquery_lookup(self):
+        qs = HStoreModel.objects.annotate(
+            value=Subquery(HStoreModel.objects.filter(pk=OuterRef('pk')).values('field')),
+        ).filter(value__a='b')
+        self.assertSequenceEqual(qs, self.objs[:2])
+
 
 @isolate_apps('postgres_tests')
 class TestChecks(PostgreSQLSimpleTestCase):
@@ -225,7 +231,7 @@ class TestChecks(PostgreSQLSimpleTestCase):
                 ),
                 hint='Use a callable instead, e.g., use `dict` instead of `{}`.',
                 obj=MyModel._meta.get_field('field'),
-                id='postgres.E003',
+                id='fields.E010',
             )
         ])
 

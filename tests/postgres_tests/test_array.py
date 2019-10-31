@@ -551,7 +551,7 @@ class TestChecks(PostgreSQLSimpleTestCase):
                 ),
                 hint='Use a callable instead, e.g., use `list` instead of `[]`.',
                 obj=MyModel._meta.get_field('field'),
-                id='postgres.E003',
+                id='fields.E010',
             )
         ])
 
@@ -961,9 +961,39 @@ class TestSplitFormField(PostgreSQLSimpleTestCase):
                 model = IntegerArrayModel
                 fields = ('field',)
 
-        obj = IntegerArrayModel(field=[1, 2])
-        form = Form({'field_0': '1', 'field_1': '2'}, instance=obj)
-        self.assertFalse(form.has_changed())
+        tests = [
+            ({}, {'field_0': '', 'field_1': ''}, True),
+            ({'field': None}, {'field_0': '', 'field_1': ''}, True),
+            ({'field': [1]}, {'field_0': '', 'field_1': ''}, True),
+            ({'field': [1]}, {'field_0': '1', 'field_1': '0'}, True),
+            ({'field': [1, 2]}, {'field_0': '1', 'field_1': '2'}, False),
+            ({'field': [1, 2]}, {'field_0': 'a', 'field_1': 'b'}, True),
+        ]
+        for initial, data, expected_result in tests:
+            with self.subTest(initial=initial, data=data):
+                obj = IntegerArrayModel(**initial)
+                form = Form(data, instance=obj)
+                self.assertIs(form.has_changed(), expected_result)
+
+    def test_splitarrayfield_remove_trailing_nulls_has_changed(self):
+        class Form(forms.ModelForm):
+            field = SplitArrayField(forms.IntegerField(), required=False, size=2, remove_trailing_nulls=True)
+
+            class Meta:
+                model = IntegerArrayModel
+                fields = ('field',)
+
+        tests = [
+            ({}, {'field_0': '', 'field_1': ''}, False),
+            ({'field': None}, {'field_0': '', 'field_1': ''}, False),
+            ({'field': []}, {'field_0': '', 'field_1': ''}, False),
+            ({'field': [1]}, {'field_0': '1', 'field_1': ''}, False),
+        ]
+        for initial, data, expected_result in tests:
+            with self.subTest(initial=initial, data=data):
+                obj = IntegerArrayModel(**initial)
+                form = Form(data, instance=obj)
+                self.assertIs(form.has_changed(), expected_result)
 
 
 class TestSplitFormWidget(PostgreSQLWidgetTestCase):

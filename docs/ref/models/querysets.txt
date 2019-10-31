@@ -126,7 +126,7 @@ described here.
 
 Here's the formal declaration of a ``QuerySet``:
 
-.. class:: QuerySet(model=None, query=None, using=None)
+.. class:: QuerySet(model=None, query=None, using=None, hints=None)
 
     Usually when you'll interact with a ``QuerySet`` you'll use it by
     :ref:`chaining filters <chaining-filters>`. To make this work, most
@@ -151,8 +151,8 @@ Here's the formal declaration of a ``QuerySet``:
         The ``query`` parameter to :class:`QuerySet` exists so that specialized
         query subclasses can reconstruct internal query state. The value of the
         parameter is an opaque representation of that query state and is not
-        part of a public API. To put it simply: if you need to ask, you don't
-        need to use it.
+        part of a public API. To put it another way: if you need to ask, you
+        don't need to use it.
 
 .. currentmodule:: django.db.models.query.QuerySet
 
@@ -1943,7 +1943,7 @@ details. The internal implementation has some more error-checking than this and
 handles some extra edge-conditions; if you're interested, read the code.
 
 If you have a field named ``defaults`` and want to use it as an exact lookup in
-``get_or_create()``, just use ``'defaults__exact'``, like so::
+``get_or_create()``, use ``'defaults__exact'``, like so::
 
     Foo.objects.get_or_create(defaults__exact='bar', defaults={'defaults': 'baz'})
 
@@ -2091,14 +2091,8 @@ that fail constraints such as duplicate unique values. Enabling this parameter
 disables setting the primary key on each model instance (if the database
 normally supports it).
 
-.. versionchanged:: 2.2
-
-    The ``ignore_conflicts`` parameter was added.
-
 ``bulk_update()``
 ~~~~~~~~~~~~~~~~~
-
-.. versionadded:: 2.2
 
 .. method:: bulk_update(objs, fields, batch_size=None)
 
@@ -2252,10 +2246,6 @@ psycopg mailing list <https://www.postgresql.org/message-id/4D2F2C71.8080805%40d
     is going to fetch less than 100KB of data, which seems a good compromise
     between the number of rows transferred and the data discarded if the loop
     is exited early.
-
-.. versionchanged:: 2.2
-
-    Support for result streaming on SQLite was added.
 
 ``latest()``
 ~~~~~~~~~~~~
@@ -2418,8 +2408,8 @@ gains).
 Additionally, if a ``some_queryset`` has not yet been evaluated, but you know
 that it will be at some point, then using ``some_queryset.exists()`` will do
 more overall work (one query for the existence check plus an extra one to later
-retrieve the results) than simply using ``bool(some_queryset)``, which
-retrieves the results and then checks if any were returned.
+retrieve the results) than using ``bool(some_queryset)``, which retrieves the
+results and then checks if any were returned.
 
 ``update()``
 ~~~~~~~~~~~~
@@ -2579,10 +2569,12 @@ The output differs significantly between databases.
 ``explain()`` is supported by all built-in database backends except Oracle
 because an implementation there isn't straightforward.
 
-The ``format`` parameter changes the output format from the databases's default,
-usually text-based. PostgreSQL supports ``'TEXT'``, ``'JSON'``, ``'YAML'``, and
-``'XML'``. MySQL supports ``'TEXT'`` (also called ``'TRADITIONAL'``) and
-``'JSON'``.
+The ``format`` parameter changes the output format from the databases's
+default, which is usually text-based. PostgreSQL supports ``'TEXT'``,
+``'JSON'``, ``'YAML'``, and ``'XML'`` formats. MariaDB and MySQL support
+``'TEXT'`` (also called ``'TRADITIONAL'``) and ``'JSON'`` formats. MySQL
+8.0.16+ also supports an improved ``'TREE'`` format, which is similar to
+PostgreSQL's ``'TEXT'`` output and is used by default, if supported.
 
 Some databases accept flags that can return more information about the query.
 Pass these flags as keyword arguments. For example, when using PostgreSQL::
@@ -2595,9 +2587,14 @@ Pass these flags as keyword arguments. For example, when using PostgreSQL::
     Execution time: 0.058 ms
 
 On some databases, flags may cause the query to be executed which could have
-adverse effects on your database. For example, PostgreSQL's ``ANALYZE`` flag
-could result in changes to data if there are triggers or if a function is
-called, even for a ``SELECT`` query.
+adverse effects on your database. For example, the ``ANALYZE`` flag supported
+by MariaDB, MySQL 8.0.18+, and PostgreSQL could result in changes to data if
+there are triggers or if a function is called, even for a ``SELECT`` query.
+
+.. versionchanged:: 3.1
+
+    Support for the ``'TREE'`` format on MySQL 8.0.16+ and ``analyze`` option
+    on MariaDB and MySQL 8.0.18+ were added.
 
 .. _field-lookups:
 
@@ -3003,8 +3000,6 @@ in the database <database-time-zone-definitions>`.
 ``iso_year``
 ~~~~~~~~~~~~
 
-.. versionadded:: 2.2
-
 For date and datetime fields, an exact ISO 8601 week-numbering year match.
 Allows chaining additional field lookups. Takes an integer year.
 
@@ -3117,6 +3112,35 @@ implementation of the relevant query varies among different database engines.)
 Note this will match any record with a ``pub_date`` that falls on a Monday (day
 2 of the week), regardless of the month or year in which it occurs. Week days
 are indexed with day 1 being Sunday and day 7 being Saturday.
+
+When :setting:`USE_TZ` is ``True``, datetime fields are converted to the
+current time zone before filtering. This requires :ref:`time zone definitions
+in the database <database-time-zone-definitions>`.
+
+.. fieldlookup:: iso_week_day
+
+``iso_week_day``
+~~~~~~~~~~~~~~~~
+
+.. versionadded:: 3.1
+
+For date and datetime fields, an exact ISO 8601 day of the week match. Allows
+chaining additional field lookups.
+
+Takes an integer value representing the day of the week from 1 (Monday) to 7
+(Sunday).
+
+Example::
+
+    Entry.objects.filter(pub_date__iso_week_day=1)
+    Entry.objects.filter(pub_date__iso_week_day__gte=1)
+
+(No equivalent SQL code fragment is included for this lookup because
+implementation of the relevant query varies among different database engines.)
+
+Note this will match any record with a ``pub_date`` that falls on a Monday (day
+1 of the week), regardless of the month or year in which it occurs. Week days
+are indexed with day 1 being Monday and day 7 being Sunday.
 
 When :setting:`USE_TZ` is ``True``, datetime fields are converted to the
 current time zone before filtering. This requires :ref:`time zone definitions
@@ -3263,6 +3287,11 @@ SQL equivalent:
 .. code-block:: sql
 
     SELECT ... WHERE pub_date IS NULL;
+
+.. deprecated:: 3.1
+
+    Using non-boolean values as the right-hand side is deprecated, use ``True``
+    or ``False`` instead. In Django 4.0, the exception will be raised.
 
 .. fieldlookup:: regex
 
@@ -3464,10 +3493,6 @@ by the aggregate.
         By default, ``StdDev`` returns the population standard deviation. However,
         if ``sample=True``, the return value will be the sample standard deviation.
 
-    .. versionchanged:: 2.2
-
-        SQLite support was added.
-
 ``Sum``
 ~~~~~~~
 
@@ -3507,10 +3532,6 @@ by the aggregate.
 
         By default, ``Variance`` returns the population variance. However,
         if ``sample=True``, the return value will be the sample variance.
-
-    .. versionchanged:: 2.2
-
-        SQLite support was added.
 
 Query-related tools
 ===================

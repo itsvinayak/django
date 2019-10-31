@@ -42,7 +42,17 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
     def _field_data_type(self, field):
         if field.is_relation:
             return field.rel_db_type(self.connection)
-        return self.connection.data_types[field.get_internal_type()]
+        return self.connection.data_types.get(
+            field.get_internal_type(),
+            field.db_type(self.connection),
+        )
+
+    def _field_base_data_types(self, field):
+        # Yield base data types for array fields.
+        if field.base_field.get_internal_type() == 'ArrayField':
+            yield from self._field_base_data_types(field.base_field)
+        else:
+            yield self._field_data_type(field.base_field)
 
     def _create_like_index_sql(self, model, field):
         """
@@ -69,8 +79,15 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
     def _alter_column_type_sql(self, model, old_field, new_field, new_type):
         self.sql_alter_column_type = 'ALTER COLUMN %(column)s TYPE %(type)s'
         # Cast when data type changed.
-        if self._field_data_type(old_field) != self._field_data_type(new_field):
-            self.sql_alter_column_type += ' USING %(column)s::%(type)s'
+        using_sql = ' USING %(column)s::%(type)s'
+        new_internal_type = new_field.get_internal_type()
+        old_internal_type = old_field.get_internal_type()
+        if new_internal_type == 'ArrayField' and new_internal_type == old_internal_type:
+            # Compare base data types for array fields.
+            if list(self._field_base_data_types(old_field)) != list(self._field_base_data_types(new_field)):
+                self.sql_alter_column_type += using_sql
+        elif self._field_data_type(old_field) != self._field_data_type(new_field):
+            self.sql_alter_column_type += using_sql
         # Make ALTER TYPE with SERIAL make sense.
         table = strip_quotes(model._meta.db_table)
         serial_fields_map = {'bigserial': 'bigint', 'serial': 'integer', 'smallserial': 'smallint'}

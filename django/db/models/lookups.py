@@ -1,14 +1,16 @@
 import itertools
 import math
+import warnings
 from copy import copy
 
 from django.core.exceptions import EmptyResultSet
 from django.db.models.expressions import Case, Exists, Func, Value, When
 from django.db.models.fields import (
-    BooleanField, DateTimeField, Field, IntegerField,
+    BooleanField, CharField, DateTimeField, Field, IntegerField, UUIDField,
 )
 from django.db.models.query_utils import RegisterLookupMixin
 from django.utils.datastructures import OrderedSet
+from django.utils.deprecation import RemovedInDjango40Warning
 from django.utils.functional import cached_property
 
 
@@ -262,9 +264,9 @@ class Exact(FieldGetDbPrepValueMixin, BuiltinLookup):
         from django.db.models.sql.query import Query
         if isinstance(self.rhs, Query):
             if self.rhs.has_limit_one():
-                # The subquery must select only the pk.
-                self.rhs.clear_select_clause()
-                self.rhs.add_fields(['pk'])
+                if not self.rhs.has_select_fields:
+                    self.rhs.clear_select_clause()
+                    self.rhs.add_fields(['pk'])
             else:
                 raise ValueError(
                     'The QuerySet value for an exact lookup must be limited to '
@@ -463,6 +465,17 @@ class IsNull(BuiltinLookup):
     prepare_rhs = False
 
     def as_sql(self, compiler, connection):
+        if not isinstance(self.rhs, bool):
+            # When the deprecation ends, replace with:
+            # raise ValueError(
+            #     'The QuerySet value for an isnull lookup must be True or '
+            #     'False.'
+            # )
+            warnings.warn(
+                'Using a non-boolean value for an isnull lookup is '
+                'deprecated, use True or False instead.',
+                RemovedInDjango40Warning,
+            )
         sql, params = compiler.compile(self.lhs)
         if self.rhs:
             return "%s IS NULL" % sql, params
@@ -548,3 +561,53 @@ class YearLt(YearLookup, LessThan):
 class YearLte(YearLookup, LessThanOrEqual):
     def get_bound_params(self, start, finish):
         return (finish,)
+
+
+class UUIDTextMixin:
+    """
+    Strip hyphens from a value when filtering a UUIDField on backends without
+    a native datatype for UUID.
+    """
+    def process_rhs(self, qn, connection):
+        if not connection.features.has_native_uuid_field:
+            from django.db.models.functions import Replace
+            if self.rhs_is_direct_value():
+                self.rhs = Value(self.rhs)
+            self.rhs = Replace(self.rhs, Value('-'), Value(''), output_field=CharField())
+        rhs, params = super().process_rhs(qn, connection)
+        return rhs, params
+
+
+@UUIDField.register_lookup
+class UUIDIExact(UUIDTextMixin, IExact):
+    pass
+
+
+@UUIDField.register_lookup
+class UUIDContains(UUIDTextMixin, Contains):
+    pass
+
+
+@UUIDField.register_lookup
+class UUIDIContains(UUIDTextMixin, IContains):
+    pass
+
+
+@UUIDField.register_lookup
+class UUIDStartsWith(UUIDTextMixin, StartsWith):
+    pass
+
+
+@UUIDField.register_lookup
+class UUIDIStartsWith(UUIDTextMixin, IStartsWith):
+    pass
+
+
+@UUIDField.register_lookup
+class UUIDEndsWith(UUIDTextMixin, EndsWith):
+    pass
+
+
+@UUIDField.register_lookup
+class UUIDIEndsWith(UUIDTextMixin, IEndsWith):
+    pass

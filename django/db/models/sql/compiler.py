@@ -1,20 +1,22 @@
 import collections
 import re
-import warnings
+from functools import partial
 from itertools import chain
 
 from django.core.exceptions import EmptyResultSet, FieldError
 from django.db.models.constants import LOOKUP_SEP
 from django.db.models.expressions import OrderBy, Random, RawSQL, Ref, Value
 from django.db.models.functions import Cast
-from django.db.models.query_utils import QueryWrapper, select_related_descend
+from django.db.models.query_utils import (
+    Q, QueryWrapper, select_related_descend,
+)
 from django.db.models.sql.constants import (
     CURSOR, GET_ITERATOR_CHUNK_SIZE, MULTI, NO_RESULTS, ORDER_DIR, SINGLE,
 )
 from django.db.models.sql.query import Query, get_order_dir
 from django.db.transaction import TransactionManagementError
 from django.db.utils import DatabaseError, NotSupportedError
-from django.utils.deprecation import RemovedInDjango31Warning
+from django.utils.functional import cached_property
 from django.utils.hashable import make_hashable
 
 
@@ -171,7 +173,11 @@ class SQLCompiler:
             # database views on which the optimization might not be allowed.
             pks = {
                 expr for expr in expressions
-                if hasattr(expr, 'target') and expr.target.primary_key and expr.target.model._meta.managed
+                if (
+                    hasattr(expr, 'target') and
+                    expr.target.primary_key and
+                    self.connection.features.allows_group_by_selected_pks_on_model(expr.target.model)
+                )
             }
             aliases = {expr.alias for expr in pks}
             expressions = [
@@ -561,17 +567,7 @@ class SQLCompiler:
                     order_by = order_by or self.connection.ops.force_no_ordering()
                     result.append('GROUP BY %s' % ', '.join(grouping))
                     if self._meta_ordering:
-                        # When the deprecation ends, replace with:
-                        # order_by = None
-                        warnings.warn(
-                            "%s QuerySet won't use Meta.ordering in Django 3.1. "
-                            "Add .order_by(%s) to retain the current query." % (
-                                self.query.model.__name__,
-                                ', '.join(repr(f) for f in self._meta_ordering),
-                            ),
-                            RemovedInDjango31Warning,
-                            stacklevel=4,
-                        )
+                        order_by = None
                 if having:
                     result.append('HAVING %s' % having)
                     params.extend(h_params)
@@ -898,6 +894,15 @@ class SQLCompiler:
                     select, model._meta, alias, cur_depth + 1,
                     next, restricted)
                 get_related_klass_infos(klass_info, next_klass_infos)
+
+            def local_setter(obj, from_obj):
+                # Set a reverse fk object when relation is non-empty.
+                if from_obj:
+                    f.remote_field.set_cached_value(from_obj, obj)
+
+            def remote_setter(name, obj, from_obj):
+                setattr(from_obj, name, obj)
+
             for name in list(requested):
                 # Filtered relations work only on the topmost level.
                 if cur_depth > 1:
@@ -908,20 +913,12 @@ class SQLCompiler:
                     model = join_opts.model
                     alias = joins[-1]
                     from_parent = issubclass(model, opts.model) and model is not opts.model
-
-                    def local_setter(obj, from_obj):
-                        # Set a reverse fk object when relation is non-empty.
-                        if from_obj:
-                            f.remote_field.set_cached_value(from_obj, obj)
-
-                    def remote_setter(obj, from_obj):
-                        setattr(from_obj, name, obj)
                     klass_info = {
                         'model': model,
                         'field': f,
                         'reverse': True,
                         'local_setter': local_setter,
-                        'remote_setter': remote_setter,
+                        'remote_setter': partial(remote_setter, name),
                         'from_parent': from_parent,
                     }
                     related_klass_infos.append(klass_info)
@@ -1159,7 +1156,8 @@ class SQLCompiler:
 
 
 class SQLInsertCompiler(SQLCompiler):
-    return_id = False
+    returning_fields = None
+    returning_params = tuple()
 
     def field_as_sql(self, field, val):
         """
@@ -1290,14 +1288,14 @@ class SQLInsertCompiler(SQLCompiler):
         # queries and generate their own placeholders. Doing that isn't
         # necessary and it should be possible to use placeholders and
         # expressions in bulk inserts too.
-        can_bulk = (not self.return_id and self.connection.features.has_bulk_insert)
+        can_bulk = (not self.returning_fields and self.connection.features.has_bulk_insert)
 
         placeholder_rows, param_rows = self.assemble_as_sql(fields, value_rows)
 
         ignore_conflicts_suffix_sql = self.connection.ops.ignore_conflicts_suffix_sql(
             ignore_conflicts=self.query.ignore_conflicts
         )
-        if self.return_id and self.connection.features.can_return_columns_from_insert:
+        if self.returning_fields and self.connection.features.can_return_columns_from_insert:
             if self.connection.features.can_return_rows_from_bulk_insert:
                 result.append(self.connection.ops.bulk_insert_sql(fields, placeholder_rows))
                 params = param_rows
@@ -1306,13 +1304,12 @@ class SQLInsertCompiler(SQLCompiler):
                 params = [param_rows[0]]
             if ignore_conflicts_suffix_sql:
                 result.append(ignore_conflicts_suffix_sql)
-            col = "%s.%s" % (qn(opts.db_table), qn(opts.pk.column))
-            r_fmt, r_params = self.connection.ops.return_insert_id(opts.pk)
-            # Skip empty r_fmt to allow subclasses to customize behavior for
+            # Skip empty r_sql to allow subclasses to customize behavior for
             # 3rd party backends. Refs #19096.
-            if r_fmt:
-                result.append(r_fmt % col)
-                params += [r_params]
+            r_sql, self.returning_params = self.connection.ops.return_insert_columns(self.returning_fields)
+            if r_sql:
+                result.append(r_sql)
+                params += [self.returning_params]
             return [(" ".join(result), tuple(chain.from_iterable(params)))]
 
         if can_bulk:
@@ -1328,41 +1325,59 @@ class SQLInsertCompiler(SQLCompiler):
                 for p, vals in zip(placeholder_rows, param_rows)
             ]
 
-    def execute_sql(self, return_id=False):
+    def execute_sql(self, returning_fields=None):
         assert not (
-            return_id and len(self.query.objs) != 1 and
+            returning_fields and len(self.query.objs) != 1 and
             not self.connection.features.can_return_rows_from_bulk_insert
         )
-        self.return_id = return_id
+        self.returning_fields = returning_fields
         with self.connection.cursor() as cursor:
             for sql, params in self.as_sql():
                 cursor.execute(sql, params)
-            if not return_id:
-                return
+            if not self.returning_fields:
+                return []
             if self.connection.features.can_return_rows_from_bulk_insert and len(self.query.objs) > 1:
-                return self.connection.ops.fetch_returned_insert_ids(cursor)
+                return self.connection.ops.fetch_returned_insert_rows(cursor)
             if self.connection.features.can_return_columns_from_insert:
                 assert len(self.query.objs) == 1
-                return self.connection.ops.fetch_returned_insert_id(cursor)
-            return self.connection.ops.last_insert_id(
+                return self.connection.ops.fetch_returned_insert_columns(cursor, self.returning_params)
+            return [self.connection.ops.last_insert_id(
                 cursor, self.query.get_meta().db_table, self.query.get_meta().pk.column
-            )
+            )]
 
 
 class SQLDeleteCompiler(SQLCompiler):
+    @cached_property
+    def single_alias(self):
+        return sum(self.query.alias_refcount[t] > 0 for t in self.query.alias_map) == 1
+
+    def _as_sql(self, query):
+        result = [
+            'DELETE FROM %s' % self.quote_name_unless_alias(query.base_table)
+        ]
+        where, params = self.compile(query.where)
+        if where:
+            result.append('WHERE %s' % where)
+        return ' '.join(result), tuple(params)
+
     def as_sql(self):
         """
         Create the SQL for this query. Return the SQL string and list of
         parameters.
         """
-        assert len([t for t in self.query.alias_map if self.query.alias_refcount[t] > 0]) == 1, \
-            "Can only delete from one table at a time."
-        qn = self.quote_name_unless_alias
-        result = ['DELETE FROM %s' % qn(self.query.base_table)]
-        where, params = self.compile(self.query.where)
-        if where:
-            result.append('WHERE %s' % where)
-        return ' '.join(result), tuple(params)
+        if self.single_alias:
+            return self._as_sql(self.query)
+        innerq = self.query.clone()
+        innerq.__class__ = Query
+        innerq.clear_select_clause()
+        pk = self.query.model._meta.pk
+        innerq.select = [
+            pk.get_col(self.query.get_initial_alias())
+        ]
+        outerq = Query(self.query.model)
+        outerq.where = self.query.where_class()
+        outerq.add_q(Q(pk__in=innerq))
+        return self._as_sql(outerq)
 
 
 class SQLUpdateCompiler(SQLCompiler):

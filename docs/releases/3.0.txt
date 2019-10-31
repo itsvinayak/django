@@ -77,9 +77,21 @@ models using the
 Filter expressions
 ------------------
 
-Expressions that outputs :class:`~django.db.models.BooleanField` may now be
+Expressions that output :class:`~django.db.models.BooleanField` may now be
 used directly in ``QuerySet`` filters, without having to first annotate and
 then filter against the annotation.
+
+Enumerations for model field choices
+------------------------------------
+
+Custom enumeration types ``TextChoices``, ``IntegerChoices``, and ``Choices``
+are now available as a way to define :attr:`.Field.choices`. ``TextChoices``
+and ``IntegerChoices`` types are provided for text and integer fields. The
+``Choices`` class allows defining a compatible enumeration for other concrete
+data types. These custom enumeration types support human-readable labels that
+can be translated and accessed via a property on the enumeration or its
+members. See :ref:`Enumeration types <field-choices-enum-types>` for more
+details and examples.
 
 Minor features
 --------------
@@ -98,17 +110,13 @@ Minor features
 
 * jQuery is upgraded from version 3.3.1 to 3.4.1.
 
-:mod:`django.contrib.admindocs`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-* ...
-
 :mod:`django.contrib.auth`
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 * The new ``reset_url_token`` attribute in
-  :class:`~django.contrib.auth.views.PasswordResetConfirmView` allows specifying
-  a token parameter displayed as a component of password reset URLs.
+  :class:`~django.contrib.auth.views.PasswordResetConfirmView` allows
+  specifying a token parameter displayed as a component of password reset
+  URLs.
 
 * Added :class:`~django.contrib.auth.backends.BaseBackend` class to ease
   customization of authentication backends.
@@ -131,10 +139,8 @@ Minor features
 * The new :meth:`.UserManager.with_perm` method returns users that have the
   specified permission.
 
-:mod:`django.contrib.contenttypes`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-* ...
+* The default iteration count for the PBKDF2 password hasher is increased from
+  150,000 to 180,000.
 
 :mod:`django.contrib.gis`
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -153,11 +159,6 @@ Minor features
 * The :class:`~django.contrib.gis.geoip2.GeoIP2` class now accepts
   :class:`pathlib.Path` ``path``.
 
-:mod:`django.contrib.messages`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-* ...
-
 :mod:`django.contrib.postgres`
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -172,32 +173,12 @@ Minor features
   and :class:`~django.contrib.postgres.operations.RemoveIndexConcurrently`
   classes allow creating and dropping indexes ``CONCURRENTLY`` on PostgreSQL.
 
-:mod:`django.contrib.redirects`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-* ...
-
 :mod:`django.contrib.sessions`
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 * The new
   :meth:`~django.contrib.sessions.backends.base.SessionBase.get_session_cookie_age()`
-  methods allows dynamically specifying the session cookie age.
-
-:mod:`django.contrib.sitemaps`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-* ...
-
-:mod:`django.contrib.sites`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-* ...
-
-:mod:`django.contrib.staticfiles`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-* ...
+  method allows dynamically specifying the session cookie age.
 
 :mod:`django.contrib.syndication`
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -211,18 +192,8 @@ Cache
 ~~~~~
 
 * :func:`~django.utils.cache.add_never_cache_headers` and
-  :func:`~django.views.decorators.cache.never_cache` now adds ``private``
-  directive to a ``Cache-Control`` header.
-
-CSRF
-~~~~
-
-* ...
-
-Email
-~~~~~
-
-* ...
+  :func:`~django.views.decorators.cache.never_cache` now add the ``private``
+  directive to ``Cache-Control`` headers.
 
 File Storage
 ~~~~~~~~~~~~
@@ -231,12 +202,6 @@ File Storage
   algorithm for generating filenames if a file with the uploaded name already
   exists.
 
-File Uploads
-~~~~~~~~~~~~
-
-* ...
-
-
 Forms
 ~~~~~
 
@@ -244,11 +209,6 @@ Forms
   :attr:`~django.forms.formsets.BaseFormSet.can_order` by setting the
   :attr:`~django.forms.formsets.BaseFormSet.ordering_widget` attribute or
   overriding :attr:`~django.forms.formsets.BaseFormSet.get_ordering_widget()`.
-
-Generic Views
-~~~~~~~~~~~~~
-
-* ...
 
 Internationalization
 ~~~~~~~~~~~~~~~~~~~~
@@ -288,11 +248,6 @@ Management Commands
   options now support templates stored in XZ archives (``.tar.xz``, ``.txz``)
   and LZMA archives (``.tar.lzma``, ``.tlz``).
 
-Migrations
-~~~~~~~~~~
-
-* ...
-
 Models
 ~~~~~~
 
@@ -311,7 +266,7 @@ Models
 
 * ``connection.queries`` now shows ``COPY … TO`` statements on PostgreSQL.
 
-* :class:`~django.db.models.FilePathField` now accepts a callable ``path``.
+* :class:`~django.db.models.FilePathField` now accepts a callable for ``path``.
 
 * Allowed symmetrical intermediate table for self-referential
   :class:`~django.db.models.ManyToManyField`.
@@ -341,6 +296,19 @@ Models
 
 * :attr:`.FileField.upload_to` now supports :class:`pathlib.Path`.
 
+* :class:`~django.db.models.CheckConstraint` is now supported on MySQL 8.0.16+.
+
+* The new ``allows_group_by_selected_pks_on_model()`` method of
+  ``django.db.backends.base.BaseDatabaseFeatures`` allows optimization of
+  ``GROUP BY`` clauses to require only the selected models' primary keys. By
+  default, it's supported only for managed models on PostgreSQL.
+
+  To enable the ``GROUP BY`` primary key-only optimization for unmanaged
+  models, you have to subclass the PostgreSQL database engine, overriding the
+  features class ``allows_group_by_selected_pks_on_model()`` method as you
+  require. See :ref:`Subclassing the built-in database backends
+  <subclassing-database-backends>` for an example.
+
 Requests and Responses
 ~~~~~~~~~~~~~~~~~~~~~~
 
@@ -350,20 +318,24 @@ Requests and Responses
 * For use in, for example, Django templates, :attr:`.HttpRequest.headers` now
   allows look ups using underscores (e.g. ``user_agent``) in place of hyphens.
 
-Serialization
-~~~~~~~~~~~~~
+.. _whats-new-security-3.0:
 
-* ...
+Security
+~~~~~~~~
 
-Signals
-~~~~~~~
+* :setting:`X_FRAME_OPTIONS` now defaults to ``'DENY'``. In older versions, the
+  :setting:`X_FRAME_OPTIONS` setting defaults to ``'SAMEORIGIN'``. If your site
+  uses frames of itself, you will need to explicitly set ``X_FRAME_ORIGINS =
+  'SAMEORIGIN'`` for them to continue working.
 
-* ...
+* :setting:`SECURE_CONTENT_TYPE_NOSNIFF` setting now defaults to ``True``. With
+  the enabled :setting:`SECURE_CONTENT_TYPE_NOSNIFF`, the
+  :class:`~django.middleware.security.SecurityMiddleware` sets the
+  :ref:`x-content-type-options` header on all responses that do not already
+  have it.
 
-Templates
-~~~~~~~~~
-
-* ...
+* :class:`~django.middleware.security.SecurityMiddleware` can now send the
+  :ref:`Referrer-Policy <referrer-policy>` header.
 
 Tests
 ~~~~~
@@ -392,16 +364,6 @@ Tests
 
 * Django test runner now supports a ``--pdb`` option to spawn a debugger at
   each error or failure.
-
-URLs
-~~~~
-
-* ...
-
-Validators
-~~~~~~~~~~
-
-* ...
 
 .. _backwards-incompatible-3.0:
 
@@ -434,13 +396,19 @@ backends.
   :class:`~django.db.models.DateTimeField` in ``datetime_cast_date_sql()``,
   ``datetime_extract_sql()``, etc.
 
-* ``DatabaseOperations.return_insert_id()`` now requires an additional
-  ``field`` argument with the model field.
-
 * Entries for ``AutoField``, ``BigAutoField``, and ``SmallAutoField`` are added
   to  ``DatabaseOperations.integer_field_ranges`` to support the integer range
   validators on these field types. Third-party backends may need to customize
   the default entries.
+
+* ``DatabaseOperations.fetch_returned_insert_id()`` is replaced by
+  ``fetch_returned_insert_columns()`` which returns a list of values returned
+  by the ``INSERT … RETURNING`` statement, instead of a single value.
+
+* ``DatabaseOperations.return_insert_id()`` is replaced by
+  ``return_insert_columns()`` that accepts a ``fields``
+  argument, which is an iterable of fields to be returned after insert. Usually
+  this is only the auto-generated primary key.
 
 :mod:`django.contrib.admin`
 ---------------------------
@@ -521,6 +489,19 @@ upload handler is used.
 ``FILE_UPLOAD_PERMISSION`` now defaults to ``0o644`` to avoid this
 inconsistency.
 
+New default values for security settings
+----------------------------------------
+
+To make Django projects more secure by default, some security settings now have
+more secure default values:
+
+* :setting:`X_FRAME_OPTIONS` now defaults to ``'DENY'``.
+
+* :setting:`SECURE_CONTENT_TYPE_NOSNIFF` now defaults to ``True``.
+
+See the *What's New* :ref:`Security section <whats-new-security-3.0>` above for
+more details on these changes.
+
 Miscellaneous
 -------------
 
@@ -542,7 +523,7 @@ Miscellaneous
 * Support for ``pywatchman`` < 1.2.0 is removed.
 
 * HTML rendered by :class:`~django.forms.SelectDateWidget` for required fields
-  now have the ``placeholder`` attribute, which mainly may require some
+  now have the ``placeholder`` attribute, which, mainly, may require some
   adjustments in tests that compare HTML.
 
 * :func:`~django.utils.http.urlencode` now encodes iterable values as they are
@@ -561,11 +542,11 @@ Miscellaneous
   field names contains an asterisk, then the ``Vary`` header will consist of a
   single asterisk ``'*'``.
 
-* :setting:`SECURE_CONTENT_TYPE_NOSNIFF` setting now defaults to ``True``. With
-  the enabled :setting:`SECURE_CONTENT_TYPE_NOSNIFF`, the
-  :class:`~django.middleware.security.SecurityMiddleware` sets the
-  :ref:`x-content-type-options` header on all responses that do not already
-  have it.
+* On MySQL 8.0.16+, ``PositiveIntegerField`` and ``PositiveSmallIntegerField``
+  now include a check constraint to prevent negative values in the database.
+
+* ``alias=None`` is added to the signature of
+  :meth:`.Expression.get_group_by_cols`.
 
 .. _deprecated-features-3.0:
 
@@ -601,9 +582,6 @@ Miscellaneous
   :func:`django.views.i18n.set_language` will stop setting the user's language
   in the session in Django 4.0. Since Django 2.1, the language is always stored
   in the :setting:`LANGUAGE_COOKIE_NAME` cookie.
-
-* ``alias=None`` is added to the signature of
-  :meth:`.Expression.get_group_by_cols`.
 
 * ``django.utils.text.unescape_entities()`` is deprecated in favor of
   :func:`html.unescape`. Note that unlike ``unescape_entities()``,

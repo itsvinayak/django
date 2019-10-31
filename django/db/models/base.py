@@ -15,13 +15,16 @@ from django.db import (
     DEFAULT_DB_ALIAS, DJANGO_VERSION_PICKLE_KEY, DatabaseError, connection,
     connections, router, transaction,
 )
-from django.db.models import NOT_PROVIDED
+from django.db.models import (
+    NOT_PROVIDED, ExpressionWrapper, IntegerField, Max, Value,
+)
 from django.db.models.constants import LOOKUP_SEP
 from django.db.models.constraints import CheckConstraint, UniqueConstraint
 from django.db.models.deletion import CASCADE, Collector
 from django.db.models.fields.related import (
     ForeignObjectRel, OneToOneField, lazy_related_operation, resolve_relation,
 )
+from django.db.models.functions import Coalesce
 from django.db.models.manager import Manager
 from django.db.models.options import Options
 from django.db.models.query import Q
@@ -519,7 +522,7 @@ class Model(metaclass=ModelBase):
 
     def __eq__(self, other):
         if not isinstance(other, Model):
-            return False
+            return NotImplemented
         if self._meta.concrete_model != other._meta.concrete_model:
             return False
         my_pk = self.pk
@@ -869,17 +872,20 @@ class Model(metaclass=ModelBase):
                 # autopopulate the _order field
                 field = meta.order_with_respect_to
                 filter_args = field.get_filter_kwargs_for_object(self)
-                order_value = cls._base_manager.using(using).filter(**filter_args).count()
-                self._order = order_value
-
+                self._order = cls._base_manager.using(using).filter(**filter_args).aggregate(
+                    _order__max=Coalesce(
+                        ExpressionWrapper(Max('_order') + Value(1), output_field=IntegerField()),
+                        Value(0),
+                    ),
+                )['_order__max']
             fields = meta.local_concrete_fields
             if not pk_set:
                 fields = [f for f in fields if f is not meta.auto_field]
 
-            update_pk = meta.auto_field and not pk_set
-            result = self._do_insert(cls._base_manager, using, fields, update_pk, raw)
-            if update_pk:
-                setattr(self, meta.pk.attname, result)
+            returning_fields = meta.db_returning_fields
+            results = self._do_insert(cls._base_manager, using, fields, returning_fields, raw)
+            for result, field in zip(results, returning_fields):
+                setattr(self, field.attname, result)
         return updated
 
     def _do_update(self, base_qs, using, pk_val, values, update_fields, forced_update):
@@ -909,13 +915,15 @@ class Model(metaclass=ModelBase):
             )
         return filtered._update(values) > 0
 
-    def _do_insert(self, manager, using, fields, update_pk, raw):
+    def _do_insert(self, manager, using, fields, returning_fields, raw):
         """
-        Do an INSERT. If update_pk is defined then this method should return
-        the new pk for the model.
+        Do an INSERT. If returning_fields is defined then this method should
+        return the newly created data for the model.
         """
-        return manager._insert([self], fields=fields, return_id=update_pk,
-                               using=using, raw=raw)
+        return manager._insert(
+            [self], fields=fields, returning_fields=returning_fields,
+            using=using, raw=raw,
+        )
 
     def delete(self, using=None, keep_parents=False):
         using = using or router.db_for_write(self.__class__, instance=self)
@@ -1700,9 +1708,15 @@ class Model(metaclass=ModelBase):
             fld = None
             for part in field.split(LOOKUP_SEP):
                 try:
-                    fld = _cls._meta.get_field(part)
+                    # pk is an alias that won't be found by opts.get_field.
+                    if part == 'pk':
+                        fld = _cls._meta.pk
+                    else:
+                        fld = _cls._meta.get_field(part)
                     if fld.is_relation:
                         _cls = fld.get_path_info()[-1].to_opts.model
+                    else:
+                        _cls = None
                 except (FieldDoesNotExist, AttributeError):
                     if fld is None or fld.get_transform(part) is None:
                         errors.append(

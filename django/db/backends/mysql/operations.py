@@ -36,8 +36,10 @@ class DatabaseOperations(BaseDatabaseOperations):
         # https://dev.mysql.com/doc/mysql/en/date-and-time-functions.html
         if lookup_type == 'week_day':
             # DAYOFWEEK() returns an integer, 1-7, Sunday=1.
-            # Note: WEEKDAY() returns 0-6, Monday=0.
             return "DAYOFWEEK(%s)" % field_name
+        elif lookup_type == 'iso_week_day':
+            # WEEKDAY() returns an integer, 0-6, Monday=0.
+            return "WEEKDAY(%s) + 1" % field_name
         elif lookup_type == 'week':
             # Override the value of default_week_format for consistency with
             # other database backends.
@@ -294,11 +296,19 @@ class DatabaseOperations(BaseDatabaseOperations):
         # Alias MySQL's TRADITIONAL to TEXT for consistency with other backends.
         if format and format.upper() == 'TEXT':
             format = 'TRADITIONAL'
+        elif not format and 'TREE' in self.connection.features.supported_explain_formats:
+            # Use TREE by default (if supported) as it's more informative.
+            format = 'TREE'
+        analyze = options.pop('analyze', False)
         prefix = super().explain_query_prefix(format, **options)
-        if format:
+        if analyze and self.connection.features.supports_explain_analyze:
+            # MariaDB uses ANALYZE instead of EXPLAIN ANALYZE.
+            prefix = 'ANALYZE' if self.connection.mysql_is_mariadb else prefix + ' ANALYZE'
+        if format and not (analyze and not self.connection.mysql_is_mariadb):
+            # Only MariaDB supports the analyze option with formats.
             prefix += ' FORMAT=%s' % format
-        if self.connection.features.needs_explain_extended and format is None:
-            # EXTENDED and FORMAT are mutually exclusive options.
+        if self.connection.features.needs_explain_extended and not analyze and format is None:
+            # ANALYZE, EXTENDED, and FORMAT are mutually exclusive options.
             prefix += ' EXTENDED'
         return prefix
 

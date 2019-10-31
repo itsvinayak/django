@@ -1,5 +1,4 @@
 import datetime
-import re
 import uuid
 from functools import lru_cache
 
@@ -12,6 +11,7 @@ from django.db.utils import DatabaseError
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.functional import cached_property
+from django.utils.regex_helper import _lazy_re_compile
 
 from .base import Database
 from .utils import BulkInsertMapper, InsertVar, Oracle_datetime
@@ -74,6 +74,8 @@ END;
         if lookup_type == 'week_day':
             # TO_CHAR(field, 'D') returns an integer from 1-7, where 1=Sunday.
             return "TO_CHAR(%s, 'D')" % field_name
+        elif lookup_type == 'iso_week_day':
+            return "TO_CHAR(%s - 1, 'D')" % field_name
         elif lookup_type == 'week':
             # IW = ISO week number
             return "TO_CHAR(%s, 'IW')" % field_name
@@ -100,7 +102,7 @@ END;
     # if the time zone name is passed in parameter. Use interpolation instead.
     # https://groups.google.com/forum/#!msg/django-developers/zwQju7hbG78/9l934yelwfsJ
     # This regexp matches all time zone names from the zoneinfo database.
-    _tzname_re = re.compile(r'^[\w/:+-]+$')
+    _tzname_re = _lazy_re_compile(r'^[\w/:+-]+$')
 
     def _prepare_tzname_delta(self, tzname):
         if '+' in tzname:
@@ -248,17 +250,19 @@ END;
     def deferrable_sql(self):
         return " DEFERRABLE INITIALLY DEFERRED"
 
-    def fetch_returned_insert_id(self, cursor):
-        value = cursor._insert_id_var.getvalue()
-        if value is None or value == []:
-            # cx_Oracle < 6.3 returns None, >= 6.3 returns empty list.
-            raise DatabaseError(
-                'The database did not return a new row id. Probably "ORA-1403: '
-                'no data found" was raised internally but was hidden by the '
-                'Oracle OCI library (see https://code.djangoproject.com/ticket/28859).'
-            )
-        # cx_Oracle < 7 returns value, >= 7 returns list with single value.
-        return value[0] if isinstance(value, list) else value
+    def fetch_returned_insert_columns(self, cursor, returning_params):
+        for param in returning_params:
+            value = param.get_value()
+            if value is None or value == []:
+                # cx_Oracle < 6.3 returns None, >= 6.3 returns empty list.
+                raise DatabaseError(
+                    'The database did not return a new row id. Probably '
+                    '"ORA-1403: no data found" was raised internally but was '
+                    'hidden by the Oracle OCI library (see '
+                    'https://code.djangoproject.com/ticket/28859).'
+                )
+            # cx_Oracle < 7 returns value, >= 7 returns list with single value.
+            yield value[0] if isinstance(value, list) else value
 
     def field_cast_sql(self, db_type, internal_type):
         if db_type and db_type.endswith('LOB'):
@@ -341,8 +345,21 @@ END;
             match_option = "'i'"
         return 'REGEXP_LIKE(%%s, %%s, %s)' % match_option
 
-    def return_insert_id(self, field):
-        return 'RETURNING %s INTO %%s', (InsertVar(field),)
+    def return_insert_columns(self, fields):
+        if not fields:
+            return '', ()
+        field_names = []
+        params = []
+        for field in fields:
+            field_names.append('%s.%s' % (
+                self.quote_name(field.model._meta.db_table),
+                self.quote_name(field.column),
+            ))
+            params.append(InsertVar(field))
+        return 'RETURNING %s INTO %s' % (
+            ', '.join(field_names),
+            ', '.join(['%s'] * len(params)),
+        ), tuple(params)
 
     def __foreign_key_constraints(self, table_name, recursive):
         with self.connection.cursor() as cursor:
